@@ -1,0 +1,11 @@
+[package]
+name = "sea_lsp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tower-lsp = "0.20.0"
+tokio = { version = "1.52.3", features = ["full"] }
+tree-sitter-sea = { path = "../tree-sitter-sea" }
+tree-sitter = "0.26.9"
+walkdir = "2.5.0"
