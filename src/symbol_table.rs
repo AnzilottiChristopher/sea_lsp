@@ -31,4 +31,35 @@ pub struct MethodInfo {
 
 pub struct SymbolTable {
     pub classes: HashMap<String, ClassInfo>,
+    pub file_classes: HashMap<PathBuf, Vec<String>>,
+}
+
+impl Default for SymbolTable {
+    fn default() -> Self {
+        SymbolTable {
+            classes: HashMap::new(),
+            file_classes: HashMap::new(),
+        }
+    }
+}
+impl SymbolTable {
+    pub fn insert_class(&mut self, class_info: ClassInfo) {
+        // track file → classes mapping
+        self.file_classes
+            .entry(class_info.file.clone())
+            .or_default()
+            .push(class_info.name.clone());
+
+        // insert into main table
+        self.classes.insert(class_info.name.clone(), class_info);
+    }
+    pub fn remove_file(&mut self, file: &PathBuf) {
+        // look up which classes came from this file
+        if let Some(class_names) = self.file_classes.remove(file) {
+            // remove each one from the symbol table
+            for name in class_names {
+                self.classes.remove(&name);
+            }
+        }
+    }
 }

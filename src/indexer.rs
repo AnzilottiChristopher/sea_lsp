@@ -45,14 +45,46 @@ fn collect_info(tree: Tree, source: &String, symbol_table: &mut SymbolTable, fil
     for child in root.children(&mut cursor) {
         match child.kind() {
             "import_declaration" => {
-                //TODO look into imports methods for lsp
-                //Needs to recursively call this function to find them
+                let path_node = child.child_by_field_name("path").unwrap();
+                let path_text = &source[path_node.start_byte()..path_node.end_byte()];
+                let path_str = path_text.trim_matches('"');
+
+                let current_dir = file.parent().unwrap_or(std::path::Path::new("."));
+                let imported_path = current_dir.join(format!("{}.sea", path_str));
+
+                // only index if file exists and hasn't been indexed yet
+                if imported_path.exists() && !symbol_table.file_classes.contains_key(&imported_path)
+                {
+                    let imported_source = std::fs::read_to_string(&imported_path)
+                        .unwrap_or_else(|e| {
+                            eprintln!("Error reading {:?}: {}", imported_path, e);
+                            String::new()
+                        })
+                        .replace("\r\n", "\n");
+
+                    let language: tree_sitter::Language = tree_sitter_sea::LANGUAGE.into();
+                    let mut parser = Parser::new();
+                    parser
+                        .set_language(&language)
+                        .expect("Error loading Sea grammar");
+
+                    if let Some(imported_tree) = parser.parse(&imported_source, None) {
+                        collect_info(
+                            imported_tree,
+                            &imported_source,
+                            symbol_table,
+                            &imported_path,
+                        );
+                    }
+                }
             }
             "class_declaration" => {
                 // First grab basic class info like name
                 // Then walk into class for pub fields and methods
                 let mut class_info: ClassInfo = ClassInfo::default();
                 collect_class_info(&child, source, &mut class_info);
+                class_info.file = file.clone();
+                symbol_table.insert_class(class_info);
             }
             _ => {}
         }
