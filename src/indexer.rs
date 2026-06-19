@@ -3,10 +3,18 @@ use std::path::PathBuf;
 use tree_sitter::{Node, Parser, Tree};
 use walkdir::WalkDir;
 
+pub fn index_workspace(symbol_table: &mut SymbolTable) {
+    let files = collect_files();
+    let parsed = parse_dirs(&files);
+    for ((tree, source), file) in parsed.into_iter().zip(files.iter()) {
+        collect_info(tree, &source, symbol_table, file);
+    }
+}
+
 fn collect_files() -> Vec<PathBuf> {
     // Maybe add a src check because currently this just checks
     // the current directory the file is in and everything below it's level
-    let sea_files: Vec<_> = WalkDir::new(".")
+    let sea_files: Vec<_> = WalkDir::new("tests/")
         .into_iter()
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "sea"))
@@ -98,6 +106,9 @@ fn collect_class_info(node: &Node, source: &String, class_info: &mut ClassInfo) 
     let name = source[name_node.start_byte()..name_node.end_byte()].to_string();
     let line = node.start_position().row + 1;
 
+    class_info.name = name;
+    class_info.line = line;
+
     //inherit and implements if it has
     let inherits = node
         .child_by_field_name("inherit")
@@ -123,13 +134,15 @@ fn collect_class_info(node: &Node, source: &String, class_info: &mut ClassInfo) 
                 class_info.fields.push(collect_field_info(&child, source));
             }
             "method_declaration" => {
-                class_info.methods.push(collect_method_info(&child, source));
+                class_info
+                    .methods
+                    .push(collect_method_info(&child, source, true));
             }
             "constructor_declaration" => {
                 let con_name_node = child.child_by_field_name("name").unwrap();
                 let con_name =
                     source[con_name_node.start_byte()..con_name_node.end_byte()].to_string();
-                let mut method = collect_method_info(&child, source);
+                let mut method = collect_method_info(&child, source, false);
                 method.is_constructor = con_name == class_info.name;
                 class_info.methods.push(method);
             }
@@ -148,10 +161,8 @@ fn collect_class_info(node: &Node, source: &String, class_info: &mut ClassInfo) 
         }
     }
 
-    class_info.name = name;
     class_info.parent = inherits;
     class_info.implements = implements;
-    class_info.line = line;
 }
 
 fn collect_field_info(node: &Node, source: &String) -> FieldInfo {
@@ -173,9 +184,13 @@ fn collect_field_info(node: &Node, source: &String) -> FieldInfo {
         is_pub,
     }
 }
-fn collect_method_info(node: &Node, source: &String) -> MethodInfo {
+fn collect_method_info(node: &Node, source: &String, is_method: bool) -> MethodInfo {
     // method_declaration wraps sea_style_method or c_style_method
-    let method_node = node.child(0).unwrap();
+    let method_node = if is_method {
+        node.child(0).unwrap()
+    } else {
+        node.clone()
+    };
 
     // check if pub
     let is_pub = method_node.child_by_field_name("visibility").is_some();

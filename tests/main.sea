@@ -1,0 +1,7 @@
+#include <stdio.h>
+import Animal from "./animal";
+
+main() -> int {
+    Animal animal = new Animal("Rex");
+    animal.speak();
+}

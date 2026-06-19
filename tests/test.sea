@@ -1,0 +1,40 @@
+#include <stdio.h>
+import Animal from "./animal";
+
+interface Speakable {
+    pub speak();
+}
+
+class Dog inherit Animal implements Speakable {
+    pub String name;
+    pub String breed;
+    int secret;
+
+    pub Dog(String name, String breed) {
+        this.name = name;
+        this.breed = breed;
+    }
+
+    pub speak() {
+        printf("Woof!\n");
+    }
+
+    pub bark() -> int {
+        printf("Bark!\n");
+        return 1;
+    }
+
+    pub drop() {
+        printf("Dog dropped\n");
+    }
+
+    greet() {
+        printf("Hello\n");
+    }
+}
+
+main() -> int {
+    Dog dog = new Dog("Rex", "Labrador");
+    dog.speak();
+    dog.bark();
+}

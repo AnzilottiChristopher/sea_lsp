@@ -1,0 +1,17 @@
+#include <stdio.h>
+
+class Animal {
+    pub String name;
+
+    pub Animal(String name) {
+        this.name = name;
+    }
+
+    pub speak() {
+        printf("...\n");
+    }
+
+    pub drop() {
+        printf("Animal dropped\n");
+    }
+}
