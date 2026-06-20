@@ -12,15 +12,40 @@ pub fn index_workspace(symbol_table: &mut SymbolTable) {
 }
 
 fn collect_files() -> Vec<PathBuf> {
-    // Maybe add a src check because currently this just checks
-    // the current directory the file is in and everything below it's level
-    let sea_files: Vec<_> = WalkDir::new("tests/")
+    let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let search_root = match find_workspace_root(&current_dir) {
+        Some(root) => root,
+        None => current_dir,
+    };
+    let sea_files: Vec<_> = WalkDir::new(&search_root)
+        .max_depth(5)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "sea"))
+        .filter(|e| {
+            // skip common directories that won't have .sea files
+            let path = e.path();
+            !path.components().any(|c| {
+                matches!(
+                    c.as_os_str().to_str(),
+                    Some("target") | Some(".git") | Some("node_modules") | Some(".cargo")
+                )
+            }) && path.extension().map_or(false, |ext| ext == "sea")
+        })
         .map(|e| e.path().to_path_buf())
         .collect();
     sea_files
+}
+
+fn find_workspace_root(start: &PathBuf) -> Option<PathBuf> {
+    let mut current = start.clone();
+    loop {
+        if current.join("sea.toml").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
 }
 
 fn parse_dirs(dir: &Vec<PathBuf>) -> Vec<(Tree, String)> {
