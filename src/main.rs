@@ -1,40 +1,22 @@
+mod backend;
 mod indexer;
 mod symbol_table;
 
+use backend::Backend;
+use std::sync::{Arc, RwLock};
 use symbol_table::SymbolTable;
+use tower_lsp::{LspService, Server};
 
-fn main() {
-    let mut symbol_table = SymbolTable::default();
-    indexer::index_workspace(&mut symbol_table);
+#[tokio::main]
+async fn main() {
+    let mut symbol_table = Arc::new(RwLock::new(SymbolTable::default()));
 
-    // print everything found
-    for (name, class) in &symbol_table.classes {
-        println!("Class: {} ({}:{})", name, class.file.display(), class.line);
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        symbol_table: symbol_table.clone(),
+    });
 
-        if let Some(parent) = &class.parent {
-            println!("  inherits: {}", parent);
-        }
-
-        if !class.implements.is_empty() {
-            println!("  implements: {}", class.implements.join(", "));
-        }
-
-        println!("  fields:");
-        for field in &class.fields {
-            println!(
-                "    {} {} (pub: {}, line: {})",
-                field.type_name, field.name, field.is_pub, field.line
-            );
-        }
-
-        println!("  methods:");
-        for method in &class.methods {
-            println!(
-                "    {} (pub: {}, constructor: {}, drop: {}, line: {})",
-                method.name, method.is_pub, method.is_constructor, method.is_drop, method.line
-            );
-        }
-
-        println!();
-    }
+    Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
+        .serve(service)
+        .await;
 }
