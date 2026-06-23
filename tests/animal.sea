@@ -3,7 +3,7 @@
 class Animal {
     pub String name;
 
-    pub Animal(String name) {
+    pub init(String name) {
         this.name = name;
     }
 

@@ -10,7 +10,7 @@ class Dog inherit Animal implements Speakable {
     pub String breed;
     int secret;
 
-    pub Dog(String name, String breed) {
+    pub init(String name, String breed) {
         this.name = name;
         this.breed = breed;
     }

@@ -9,7 +9,7 @@ use tower_lsp::{LspService, Server};
 
 #[tokio::main]
 async fn main() {
-    let mut symbol_table = Arc::new(RwLock::new(SymbolTable::default()));
+    let symbol_table = Arc::new(RwLock::new(SymbolTable::default()));
 
     let (service, socket) = LspService::new(|client| Backend {
         client,
