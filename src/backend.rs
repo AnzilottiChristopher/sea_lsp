@@ -37,6 +37,11 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    retrigger_characters: None,
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -98,6 +103,104 @@ impl LanguageServer for Backend {
                 indexer::index_file(&path, &mut st);
             }
         }
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let pos = params.text_document_position_params;
+        let uri = pos.text_document.uri;
+        let position = pos.position;
+
+        let source = match self
+            .documents
+            .read()
+            .ok()
+            .and_then(|d| d.get(&uri).cloned())
+        {
+            Some(s) => s.replace("\r\n", "\n"),
+            None => return Ok(None),
+        };
+
+        // get the word before the (
+        let word =
+            get_word_before_paren(&source, position.line as usize, position.character as usize);
+
+        if word.is_empty() {
+            return Ok(None);
+        }
+
+        if let Ok(st) = self.symbol_table.read() {
+            // check if it's a constructor — new Dog(
+            for (class_name, class_info) in &st.classes {
+                if class_name == &word {
+                    // find init method
+                    if let Some(method) = class_info.methods.iter().find(|m| m.is_constructor) {
+                        let params_str = method
+                            .params
+                            .iter()
+                            .map(|(t, n)| format!("{} {}", t, n))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+
+                        let label = format!("init({})", params_str);
+                        return Ok(Some(SignatureHelp {
+                            signatures: vec![SignatureInformation {
+                                label,
+                                documentation: None,
+                                parameters: Some(
+                                    method
+                                        .params
+                                        .iter()
+                                        .map(|(t, n)| ParameterInformation {
+                                            label: ParameterLabel::Simple(format!("{} {}", t, n)),
+                                            documentation: None,
+                                        })
+                                        .collect(),
+                                ),
+                                active_parameter: None,
+                            }],
+                            active_signature: Some(0),
+                            active_parameter: None,
+                        }));
+                    }
+                }
+
+                // check if it's a method call — dog.bark(
+                for method in &class_info.methods {
+                    if method.name == word && !method.is_constructor {
+                        let params_str = method
+                            .params
+                            .iter()
+                            .map(|(t, n)| format!("{} {}", t, n))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+
+                        let label =
+                            format!("{}({}) -> {}", method.name, params_str, method.return_type);
+                        return Ok(Some(SignatureHelp {
+                            signatures: vec![SignatureInformation {
+                                label,
+                                documentation: None,
+                                parameters: Some(
+                                    method
+                                        .params
+                                        .iter()
+                                        .map(|(t, n)| ParameterInformation {
+                                            label: ParameterLabel::Simple(format!("{} {}", t, n)),
+                                            documentation: None,
+                                        })
+                                        .collect(),
+                                ),
+                                active_parameter: None,
+                            }],
+                            active_signature: Some(0),
+                            active_parameter: None,
+                        }));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     async fn goto_definition(
@@ -297,22 +400,41 @@ impl Backend {
             return Ok(None);
         }
 
-        let type_name = match find_variable_type(&source, &var_name) {
-            Some(t) => t,
-            None => {
-                eprintln!("no type found for '{}'", var_name);
-                return Ok(None);
+        let type_name = if var_name == "this" {
+            match find_enclosing_class(&source, position.line as usize) {
+                Some(class_name) => class_name,
+                None => {
+                    eprintln!("this. but no enclosing class found");
+                    return Ok(None);
+                }
+            }
+        } else {
+            match find_variable_type(&source, &var_name) {
+                Some(t) => t,
+                None => {
+                    eprintln!("no type found for '{}'", var_name);
+                    return Ok(None);
+                }
             }
         };
+
+        // let type_name = match find_variable_type(&source, &var_name) {
+        //     Some(t) => t,
+        //     None => {
+        //         eprintln!("no type found for '{}'", var_name);
+        //         return Ok(None);
+        //     }
+        // };
 
         eprintln!("type_name='{}'", type_name);
 
         if let Ok(st) = self.symbol_table.read() {
             if let Some(class) = st.classes.get(&type_name) {
                 let mut items: Vec<CompletionItem> = Vec::new();
+                let is_this = var_name == "this";
 
                 for method in &class.methods {
-                    if method.is_pub && !method.is_drop && !method.is_constructor {
+                    if (is_this || method.is_pub) && !method.is_drop && !method.is_constructor {
                         let params_str = method
                             .params
                             .iter()
@@ -332,7 +454,7 @@ impl Backend {
                 }
 
                 for field in &class.fields {
-                    if field.is_pub {
+                    if is_this || field.is_pub {
                         items.push(CompletionItem {
                             label: field.name.clone(),
                             kind: Some(CompletionItemKind::FIELD),
@@ -446,4 +568,76 @@ fn find_variable_type(source: &str, var_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn get_word_before_paren(source: &str, line: usize, character: usize) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    if line >= lines.len() {
+        return String::new();
+    }
+    let line_text = lines[line];
+    let chars: Vec<char> = line_text.chars().collect();
+
+    // character is position after (
+    // go back to find the (
+    let paren_pos = if character > 0 {
+        character - 1
+    } else {
+        return String::new();
+    };
+
+    if paren_pos >= chars.len() || chars[paren_pos] != '(' {
+        return String::new();
+    }
+
+    // get word before (
+    let end = paren_pos;
+    let mut start = end;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+
+    chars[start..end].iter().collect()
+}
+
+fn find_enclosing_class(source: &str, line: usize) -> Option<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut brace_depth: i32 = 0;
+    let mut found_class: Option<String> = None;
+    let mut inside_method = false;
+
+    for i in (0..=line).rev() {
+        let trimmed = lines[i].trim();
+
+        for c in trimmed.chars().rev() {
+            match c {
+                '}' => brace_depth += 1,
+                '{' => brace_depth -= 1,
+                _ => {}
+            }
+        }
+
+        if brace_depth < 0 {
+            if trimmed.starts_with("class ") {
+                // only count if we passed through a method body first
+                if inside_method {
+                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        found_class = Some(
+                            parts[1]
+                                .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                                .to_string(),
+                        );
+                    }
+                }
+                brace_depth = 0;
+            } else {
+                // hit a non-class opener — this is a method body
+                inside_method = true;
+                brace_depth = 0;
+            }
+        }
+    }
+
+    found_class
 }
