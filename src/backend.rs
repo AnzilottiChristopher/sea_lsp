@@ -504,6 +504,14 @@ impl Backend {
                 ..Default::default()
             });
         }
+        for (param_name, param_type) in collect_params(source, line) {
+            items.push(CompletionItem {
+                label: param_name,
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(param_type),
+                ..Default::default()
+            });
+        }
 
         for s in &["int", "char", "float", "double", "void", "String"] {
             items.push(CompletionItem {
@@ -716,4 +724,58 @@ fn collect_local_vars(source: &str, up_to_line: usize) -> HashMap<String, String
         }
     }
     vars
+}
+
+fn collect_params(source: &str, line: usize) -> HashMap<String, String> {
+    let mut params = HashMap::new();
+    let lines: Vec<&str> = source.lines().collect();
+    let mut brace_depth: i32 = 0;
+
+    for i in (0..=line).rev() {
+        let trimmed = lines[i].trim();
+
+        // track brace depth walking backward
+        for c in trimmed.chars().rev() {
+            match c {
+                '}' => brace_depth += 1,
+                '{' => brace_depth -= 1,
+                _ => {}
+            }
+        }
+
+        // when brace_depth goes negative we've found the opening brace
+        // of the scope the cursor is in — this line is the method signature
+        if brace_depth < 0 {
+            // make sure it's actually a method/init signature, not a class or if/while
+            // a method signature will have a '(' and ')' before the '{'
+            if let Some(paren_start) = trimmed.find('(') {
+                if let Some(paren_end) = trimmed.rfind(')') {
+                    // make sure this isn't a class declaration or control flow
+                    let before_paren = trimmed[..paren_start].trim();
+                    let is_control_flow = ["if", "while", "for", "switch"]
+                        .iter()
+                        .any(|kw| before_paren.ends_with(kw));
+                    let is_class = before_paren.starts_with("class ");
+
+                    if !is_control_flow && !is_class {
+                        let param_section = &trimmed[paren_start + 1..paren_end];
+                        for param in param_section.split(',') {
+                            let parts: Vec<&str> = param.trim().split_whitespace().collect();
+                            if parts.len() == 2 {
+                                params.insert(parts[1].to_string(), parts[0].to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            break; // whether we found params or not, stop here
+        }
+
+        // stop if we've walked out past the class entirely
+        if trimmed.starts_with("class ") {
+            break;
+        }
+    }
+
+    params
 }
