@@ -20,6 +20,7 @@ class Dog inherit Animal implements Speakable {
     }
 
     pub bark() -> int {
+        this.greet();
         printf("Bark!\n");
         return 1;
     }

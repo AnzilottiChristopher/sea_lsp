@@ -344,6 +344,16 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         eprintln!("[INFO] completion called");
 
+        let uri = params.text_document_position.text_document.uri.clone();
+        let line = params.text_document_position.position.line as usize;
+
+        let source = self
+            .documents
+            .read()
+            .ok()
+            .and_then(|d| d.get(&uri).cloned())
+            .unwrap_or_default();
+
         let trigger = params
             .context
             .as_ref()
@@ -351,7 +361,7 @@ impl LanguageServer for Backend {
 
         match trigger {
             Some(".") => self.dot_completion(params).await,
-            _ => self.static_completion().await,
+            _ => self.static_completion(&source, line).await,
         }
     }
 }
@@ -451,6 +461,8 @@ impl Backend {
                                 "{}({}) -> {}",
                                 method.name, params_str, method.return_type
                             )),
+                            insert_text: Some(format!("{}($1)", method.name)),
+                            insert_text_format: Some(InsertTextFormat::SNIPPET),
                             ..Default::default()
                         });
                     }
@@ -477,8 +489,21 @@ impl Backend {
         Ok(None)
     }
 
-    async fn static_completion(&self) -> Result<Option<CompletionResponse>> {
+    async fn static_completion(
+        &self,
+        source: &str,
+        line: usize,
+    ) -> Result<Option<CompletionResponse>> {
         let mut items: Vec<CompletionItem> = Vec::new();
+
+        for (var_name, var_type) in collect_local_vars(source, line) {
+            items.push(CompletionItem {
+                label: var_name,
+                kind: Some(CompletionItemKind::VARIABLE),
+                detail: Some(var_type),
+                ..Default::default()
+            });
+        }
 
         for s in &["int", "char", "float", "double", "void", "String"] {
             items.push(CompletionItem {
@@ -674,4 +699,21 @@ fn find_enclosing_class(source: &str, line: usize) -> Option<String> {
     }
 
     found_class
+}
+
+fn collect_local_vars(source: &str, up_to_line: usize) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    for line in source.lines().take(up_to_line + 1) {
+        let trimmed = line.trim();
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let potential_type = parts[0];
+            let potential_var = parts[1].trim_end_matches(|c| c == ';' || c == '=' || c == '(');
+            // skip keywords
+            if !["if", "while", "for", "return", "pub", "void", "class"].contains(&potential_type) {
+                vars.insert(potential_var.to_string(), potential_type.to_string());
+            }
+        }
+    }
+    vars
 }
