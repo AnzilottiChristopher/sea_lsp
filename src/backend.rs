@@ -39,7 +39,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
-                    retrigger_characters: None,
+                    retrigger_characters: Some(vec![",".to_string()]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -120,9 +120,14 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        // get the word before the (
-        let word =
-            get_word_before_paren(&source, position.line as usize, position.character as usize);
+        // find the enclosing call's "(" and the function/constructor name before it,
+        // plus which parameter index the cursor is currently sitting in (by comma count)
+        let (word, active_param) =
+            match find_enclosing_call(&source, position.line as usize, position.character as usize)
+            {
+                Some(result) => result,
+                None => return Ok(None),
+            };
 
         if word.is_empty() {
             return Ok(None);
@@ -142,6 +147,9 @@ impl LanguageServer for Backend {
                             .join(", ");
 
                         let label = format!("init({})", params_str);
+                        let param_count = method.params.len();
+                        let clamped_active = clamp_active_param(active_param, param_count);
+
                         return Ok(Some(SignatureHelp {
                             signatures: vec![SignatureInformation {
                                 label,
@@ -156,10 +164,10 @@ impl LanguageServer for Backend {
                                         })
                                         .collect(),
                                 ),
-                                active_parameter: None,
+                                active_parameter: clamped_active,
                             }],
                             active_signature: Some(0),
-                            active_parameter: None,
+                            active_parameter: clamped_active,
                         }));
                     }
                 }
@@ -176,6 +184,9 @@ impl LanguageServer for Backend {
 
                         let label =
                             format!("{}({}) -> {}", method.name, params_str, method.return_type);
+                        let param_count = method.params.len();
+                        let clamped_active = clamp_active_param(active_param, param_count);
+
                         return Ok(Some(SignatureHelp {
                             signatures: vec![SignatureInformation {
                                 label,
@@ -190,10 +201,10 @@ impl LanguageServer for Backend {
                                         })
                                         .collect(),
                                 ),
-                                active_parameter: None,
+                                active_parameter: clamped_active,
                             }],
                             active_signature: Some(0),
-                            active_parameter: None,
+                            active_parameter: clamped_active,
                         }));
                     }
                 }
@@ -418,14 +429,6 @@ impl Backend {
             }
         };
 
-        // let type_name = match find_variable_type(&source, &var_name) {
-        //     Some(t) => t,
-        //     None => {
-        //         eprintln!("no type found for '{}'", var_name);
-        //         return Ok(None);
-        //     }
-        // };
-
         eprintln!("type_name='{}'", type_name);
 
         if let Ok(st) = self.symbol_table.read() {
@@ -570,34 +573,65 @@ fn find_variable_type(source: &str, var_name: &str) -> Option<String> {
     None
 }
 
-fn get_word_before_paren(source: &str, line: usize, character: usize) -> String {
+/// Scans backward across (possibly multiple) lines from `(line, character)` to find
+/// the unmatched, enclosing '(' for the cursor's current position, tracking paren
+/// depth so nested calls like `foo(bar(1, 2), |)` resolve to `foo`'s paren, not `bar`'s.
+///
+/// Returns `(callee_name, active_parameter_index)` where the index is the number of
+/// depth-0 commas seen between the enclosing '(' and the cursor.
+fn find_enclosing_call(source: &str, line: usize, character: usize) -> Option<(String, u32)> {
     let lines: Vec<&str> = source.lines().collect();
     if line >= lines.len() {
-        return String::new();
-    }
-    let line_text = lines[line];
-    let chars: Vec<char> = line_text.chars().collect();
-
-    // character is position after (
-    // go back to find the (
-    let paren_pos = if character > 0 {
-        character - 1
-    } else {
-        return String::new();
-    };
-
-    if paren_pos >= chars.len() || chars[paren_pos] != '(' {
-        return String::new();
+        return None;
     }
 
-    // get word before (
-    let end = paren_pos;
-    let mut start = end;
-    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
-        start -= 1;
+    let mut depth: i32 = 0;
+    let mut comma_count: u32 = 0;
+
+    // Walk backward line by line, starting at the cursor's line/character.
+    for cur_line in (0..=line).rev() {
+        let chars: Vec<char> = lines[cur_line].chars().collect();
+        let start_char = if cur_line == line {
+            character.min(chars.len())
+        } else {
+            chars.len()
+        };
+
+        let mut i = start_char;
+        while i > 0 {
+            i -= 1;
+            match chars[i] {
+                ')' => depth += 1,
+                '(' => {
+                    if depth == 0 {
+                        // found the enclosing '(' — extract the identifier before it
+                        let end = i;
+                        let mut start = end;
+                        while start > 0
+                            && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_')
+                        {
+                            start -= 1;
+                        }
+                        let word: String = chars[start..end].iter().collect();
+                        return Some((word, comma_count));
+                    } else {
+                        depth -= 1;
+                    }
+                }
+                ',' if depth == 0 => comma_count += 1,
+                _ => {}
+            }
+        }
     }
 
-    chars[start..end].iter().collect()
+    None
+}
+
+fn clamp_active_param(active_param: u32, param_count: usize) -> Option<u32> {
+    if param_count == 0 {
+        return Some(0);
+    }
+    Some(active_param.min(param_count as u32 - 1))
 }
 
 fn find_enclosing_class(source: &str, line: usize) -> Option<String> {
