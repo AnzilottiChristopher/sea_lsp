@@ -37,6 +37,8 @@ impl LanguageServer for Backend {
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
                     retrigger_characters: Some(vec![",".to_string()]),
@@ -103,6 +105,183 @@ impl LanguageServer for Backend {
                 indexer::index_file(&path, &mut st);
             }
         }
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+
+        let path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+
+        if let Ok(st) = self.symbol_table.read() {
+            let mut symbols: Vec<SymbolInformation> = Vec::new();
+
+            for (_, class) in &st.classes {
+                if class.file != path {
+                    continue;
+                }
+
+                let class_uri = match Url::from_file_path(&class.file) {
+                    Ok(u) => u,
+                    Err(_) => continue,
+                };
+
+                let class_range = Range {
+                    start: Position {
+                        line: (class.line - 1) as u32,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: (class.line - 1) as u32,
+                        character: 0,
+                    },
+                };
+
+                #[allow(deprecated)]
+                symbols.push(SymbolInformation {
+                    name: class.name.clone(),
+                    kind: SymbolKind::CLASS,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: class_uri.clone(),
+                        range: class_range,
+                    },
+                    container_name: None,
+                });
+
+                for field in &class.fields {
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: field.name.clone(),
+                        kind: SymbolKind::FIELD,
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: class_uri.clone(),
+                            range: class_range,
+                        },
+                        container_name: Some(class.name.clone()),
+                    });
+                }
+
+                for method in &class.methods {
+                    if method.is_drop {
+                        continue;
+                    }
+                    let kind = if method.is_constructor {
+                        SymbolKind::CONSTRUCTOR
+                    } else {
+                        SymbolKind::METHOD
+                    };
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: method.name.clone(),
+                        kind,
+                        tags: None,
+                        deprecated: None,
+                        location: Location {
+                            uri: class_uri.clone(),
+                            range: class_range,
+                        },
+                        container_name: Some(class.name.clone()),
+                    });
+                }
+            }
+
+            return Ok(Some(DocumentSymbolResponse::Flat(symbols)));
+        }
+
+        Ok(None)
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+
+        if let Ok(st) = self.symbol_table.read() {
+            let mut symbols: Vec<SymbolInformation> = Vec::new();
+
+            for (_, class) in &st.classes {
+                let class_uri = match Url::from_file_path(&class.file) {
+                    Ok(u) => u,
+                    Err(_) => continue,
+                };
+
+                let location = Location {
+                    uri: class_uri.clone(),
+                    range: Range {
+                        start: Position {
+                            line: (class.line - 1) as u32,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: (class.line - 1) as u32,
+                            character: 0,
+                        },
+                    },
+                };
+
+                if query.is_empty() || class.name.to_lowercase().contains(&query) {
+                    #[allow(deprecated)]
+                    symbols.push(SymbolInformation {
+                        name: class.name.clone(),
+                        kind: SymbolKind::CLASS,
+                        tags: None,
+                        deprecated: None,
+                        location: location.clone(),
+                        container_name: None,
+                    });
+                }
+
+                for method in &class.methods {
+                    if method.is_drop {
+                        continue;
+                    }
+                    if query.is_empty() || method.name.to_lowercase().contains(&query) {
+                        let kind = if method.is_constructor {
+                            SymbolKind::CONSTRUCTOR
+                        } else {
+                            SymbolKind::METHOD
+                        };
+                        #[allow(deprecated)]
+                        symbols.push(SymbolInformation {
+                            name: method.name.clone(),
+                            kind,
+                            tags: None,
+                            deprecated: None,
+                            location: location.clone(),
+                            container_name: Some(class.name.clone()),
+                        });
+                    }
+                }
+
+                for field in &class.fields {
+                    if query.is_empty() || field.name.to_lowercase().contains(&query) {
+                        #[allow(deprecated)]
+                        symbols.push(SymbolInformation {
+                            name: field.name.clone(),
+                            kind: SymbolKind::FIELD,
+                            tags: None,
+                            deprecated: None,
+                            location: location.clone(),
+                            container_name: Some(class.name.clone()),
+                        });
+                    }
+                }
+            }
+
+            return Ok(Some(symbols));
+        }
+
+        Ok(None)
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
